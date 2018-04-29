@@ -1,3 +1,7 @@
+from __future__ import absolute_import
+from __future__ import division
+from __future__ import print_function
+
 import os
 import sys
 import numpy as np
@@ -47,47 +51,53 @@ def train(model, supervisor, num_label):
     fd_train_acc, fd_loss, fd_val_acc = save_to()
     config = tf.ConfigProto()
     config.gpu_options.allow_growth = True
-    with supervisor.managed_session(config=config) as sess:
-        print("\nNote: all of results will be saved to directory: " + cfg.results)
-        for epoch in range(cfg.epoch):
-            print("Training for epoch %d/%d:" % (epoch, cfg.epoch))
-            if supervisor.should_stop():
-                print('supervisor stoped!')
-                break
-            for step in tqdm(range(num_tr_batch), total=num_tr_batch, ncols=70, leave=False, unit='b'):
-                start = step * cfg.batch_size
-                end = start + cfg.batch_size
-                global_step = epoch * num_tr_batch + step
-
-                if global_step % cfg.train_sum_freq == 0:
-                    _, loss, train_acc, summary_str = sess.run([model.train_op, model.total_loss, model.accuracy, model.train_summary])
-                    assert not np.isnan(loss), 'Something wrong! loss is nan...'
-                    supervisor.summary_writer.add_summary(summary_str, global_step)
-
-                    fd_loss.write(str(global_step) + ',' + str(loss) + "\n")
-                    fd_loss.flush()
-                    fd_train_acc.write(str(global_step) + ',' + str(train_acc / cfg.batch_size) + "\n")
-                    fd_train_acc.flush()
-                else:
-                    sess.run(model.train_op)
-
-                if cfg.val_sum_freq != 0 and (global_step) % cfg.val_sum_freq == 0:
-                    val_acc = 0
-                    for i in range(num_val_batch):
-                        start = i * cfg.batch_size
+    batch_queue = tf.contrib.slim.prefetch_queue.prefetch_queue(
+          [trX, trY], capacity=2 * FLAGS.num_gpus)
+    with tf.variable_scope(tf.get_variable_scope()):
+      for i in xrange(FLAGS.num_gpus):
+        with tf.device('/gpu:%d' % i):
+          with tf.name_scope('%s_%d' % (cifar10.TOWER_NAME, i)) as scope:
+            with supervisor.managed_session(config=config) as sess:
+                print("\nNote: all of results will be saved to directory: " + cfg.results)
+                for epoch in range(cfg.epoch):
+                    print("Training for epoch %d/%d:" % (epoch, cfg.epoch))
+                    if supervisor.should_stop():
+                        print('supervisor stoped!')
+                        break
+                    for step in tqdm(range(num_tr_batch), total=num_tr_batch, ncols=70, leave=False, unit='b'):
+                        start = step * cfg.batch_size
                         end = start + cfg.batch_size
-                        acc = sess.run(model.accuracy, {model.X: valX[start:end], model.labels: valY[start:end]})
-                        val_acc += acc
-                    val_acc = val_acc / (cfg.batch_size * num_val_batch)
-                    fd_val_acc.write(str(global_step) + ',' + str(val_acc) + '\n')
-                    fd_val_acc.flush()
+                        global_step = epoch * num_tr_batch + step
 
-            if (epoch + 1) % cfg.save_freq == 0:
-                supervisor.saver.save(sess, cfg.logdir + '/model_epoch_%04d_step_%02d' % (epoch, global_step))
+                        if global_step % cfg.train_sum_freq == 0:
+                            _, loss, train_acc, summary_str = sess.run([model.train_op, model.total_loss, model.accuracy, model.train_summary])
+                            assert not np.isnan(loss), 'Something wrong! loss is nan...'
+                            supervisor.summary_writer.add_summary(summary_str, global_step)
 
-        fd_val_acc.close()
-        fd_train_acc.close()
-        fd_loss.close()
+                            fd_loss.write(str(global_step) + ',' + str(loss) + "\n")
+                            fd_loss.flush()
+                            fd_train_acc.write(str(global_step) + ',' + str(train_acc / cfg.batch_size) + "\n")
+                            fd_train_acc.flush()
+                        else:
+                            sess.run(model.train_op)
+
+                        if cfg.val_sum_freq != 0 and (global_step) % cfg.val_sum_freq == 0:
+                            val_acc = 0
+                            for i in range(num_val_batch):
+                                start = i * cfg.batch_size
+                                end = start + cfg.batch_size
+                                acc = sess.run(model.accuracy, {model.X: valX[start:end], model.labels: valY[start:end]})
+                                val_acc += acc
+                            val_acc = val_acc / (cfg.batch_size * num_val_batch)
+                            fd_val_acc.write(str(global_step) + ',' + str(val_acc) + '\n')
+                            fd_val_acc.flush()
+
+                    if (epoch + 1) % cfg.save_freq == 0:
+                        supervisor.saver.save(sess, cfg.logdir + '/model_epoch_%04d_step_%02d' % (epoch, global_step))
+
+                fd_val_acc.close()
+                fd_train_acc.close()
+                fd_loss.close()
 
 
 def evaluation(model, supervisor, num_label):
